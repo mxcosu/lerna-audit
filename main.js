@@ -4,7 +4,6 @@ const { restorePackageJson } = require("./restore-package-json.function");
 const {
   restoreOriginalPackageJson,
 } = require("./restore-original-package-json.function");
-const { savePackageJSON } = require("./save-package-json.function");
 const { exec } = require("child_process");
 const { promises } = require("fs");
 const { join } = require("path");
@@ -12,8 +11,8 @@ const { join } = require("path");
 const { argv } = require("yargs")
   .boolean("fix")
   .default("fix", true)
-  .string("package")
-  .default("package", null);
+  .string("name")
+  .default("name", null);
 
 let packagePaths;
 
@@ -82,8 +81,9 @@ function packageFilter(originalDepenencies, filter) {
 async function lernaAudit() {
   const lernaPackages = await getLernaPackages();
   let lernaPackageNames = lernaPackages.map((p) => p.name);
-  if (argv.package) {
-    lernaPackageNames = argv.package;
+  console.log(lernaPackageNames);
+  if (argv.name) {
+    lernaPackageNames = argv.name;
   }
   for (let lernaPackage of lernaPackages) {
     packagePaths = getPackageFilePaths(lernaPackage.location);
@@ -116,7 +116,10 @@ async function lernaAudit() {
         ),
       };
 
-      await savePackageJSON(lernaPackage.location, newPackageJson);
+      await promises.writeFile(
+        packagePaths.originalPath,
+        JSON.stringify(newPackageJson, null, 2)
+      );
 
       try {
         console.log(`Run audit in ${lernaPackage.location}`);
@@ -135,7 +138,10 @@ async function lernaAudit() {
         internalLernaDependencies
       );
 
-      await savePackageJSON(lernaPackage.location, restoredPackageJson);
+      await promises.writeFile(
+        packagePaths.originalPath,
+        JSON.stringify(restoredPackageJson, null, 2)
+      );
       await promises.unlink(packagePaths.backupPath);
     } catch (e) {
       console.error(e);
