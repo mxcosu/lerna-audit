@@ -1,120 +1,155 @@
 #!/usr/bin/env node
 
-const {restorePackageJson} = require("./restore-package-json.function");
-const {restoreOriginalPackageJson} = require("./restore-original-package-json.function");
-const {exec} = require('child_process');
-const {promises} = require('fs');
-const {join} = require('path');
+const { restorePackageJson } = require("./restore-package-json.function");
+const {
+  restoreOriginalPackageJson,
+} = require("./restore-original-package-json.function");
+const { exec } = require("child_process");
+const { promises } = require("fs");
+const { join } = require("path");
 
-const {argv} = require('yargs')
-    .boolean("fix")
-    .default("fix", true)
+const { argv } = require("yargs")
+  .boolean("fix")
+  .default("fix", true)
+  .string("name")
+  .default("name", null);
 
 let packagePaths;
 
-process.on('unhandledRejection', (error) => {
-    console.error(error);
-    process.exit(1);
+process.on("unhandledRejection", (error) => {
+  console.error(error);
+  process.exit(1);
 });
 
-async function dieGracefully(){
-    await restoreOriginalPackageJson(packagePaths);
-    process.exit(1);
+async function dieGracefully() {
+  await restoreOriginalPackageJson(packagePaths);
+  process.exit(1);
 }
-process.on('SIGINT', async () => await dieGracefully());
-process.on('SIGTERM', async () => await dieGracefully());
+process.on("SIGINT", async () => await dieGracefully());
+process.on("SIGTERM", async () => await dieGracefully());
 
 async function cmd(command, cwd = process.cwd()) {
-    return new Promise((res, rej) => {
-        exec(command, {cwd}, (err, stdout, stderr) => {
-            if (err) {
-                rej(stderr || stdout);
-            } else {
-                res(stdout);
-            }
-        });
-
-    })
+  return new Promise((res, rej) => {
+    exec(command, { cwd }, (err, stdout, stderr) => {
+      if (err) {
+        rej(stderr || stdout);
+      } else {
+        res(stdout);
+      }
+    });
+  });
 }
 
 async function getLernaPackages() {
-    const result = await cmd('npx lerna ls --all --json --loglevel=silent');
-    return JSON.parse(result);
+  const result = await cmd("npx lerna ls --all --json --loglevel=silent");
+  return JSON.parse(result);
 }
 
 function getPackageFilePaths(path) {
-    return {
-        backupPath: join(path, 'original-package.json'),
-        originalPath: join(path, 'package.json'),
-    }
+  return {
+    backupPath: join(path, "original-package.json"),
+    originalPath: join(path, "package.json"),
+  };
 }
 
-function packageInJson(packageNames, name){
-    return packageNames.some(n => n === name)
+function packageInJson(packageNames, name) {
+  return packageNames.some((n) => n === name);
 }
 
-function filterInternalLernaDeps (deps, packageNames) {
-    return packageFilter(deps, (name) => packageInJson(packageNames, name));
+function filterInternalLernaDeps(deps, packageNames) {
+  return packageFilter(deps, (name) => packageInJson(packageNames, name));
 }
 
-function filterExternalDeps (deps, packageNames) {
-    return packageFilter(deps, (name) => !packageInJson(packageNames, name))
+function filterExternalDeps(deps, packageNames) {
+  return packageFilter(deps, (name) => !packageInJson(packageNames, name));
 }
 
-function packageFilter(originalDepenencies, filter){
-    return Object.entries(originalDepenencies || {}).filter(([name]) => {
-        return filter(name)
-    }).reduce((filteredDependencies, [name, version]) => ({...filteredDependencies, [name]: version}), {})
+function packageFilter(originalDepenencies, filter) {
+  return Object.entries(originalDepenencies || {})
+    .filter(([name]) => {
+      return filter(name);
+    })
+    .reduce(
+      (filteredDependencies, [name, version]) => ({
+        ...filteredDependencies,
+        [name]: version,
+      }),
+      {}
+    );
 }
 
 async function lernaAudit() {
-    const lernaPackages = await getLernaPackages();
-    const lernaPackageNames = lernaPackages.map(p => p.name);
-    for (let lernaPackage of lernaPackages) {
-        packagePaths = getPackageFilePaths(lernaPackage.location);
+  const lernaPackages = await getLernaPackages();
+  let lernaPackageNames = lernaPackages.map((p) => p.name);
+  console.log(lernaPackageNames);
+  if (argv.name) {
+    lernaPackageNames = argv.name;
+  }
+  for (let lernaPackage of lernaPackages) {
+    packagePaths = getPackageFilePaths(lernaPackage.location);
 
-        console.log(`Running ${lernaPackage.name}`);
+    console.log(`Running ${lernaPackage.name}`);
 
-        const packageJson = require(packagePaths.originalPath);
-        await promises.rename(packagePaths.originalPath, packagePaths.backupPath);
+    const packageJson = require(packagePaths.originalPath);
+    await promises.rename(packagePaths.originalPath, packagePaths.backupPath);
 
-        const internalLernaDependencies = {
-            dependencies: filterInternalLernaDeps(packageJson.dependencies, lernaPackageNames),
-            devDependencies: filterInternalLernaDeps(packageJson.devDependencies, lernaPackageNames)
-        };
-        try {
+    const internalLernaDependencies = {
+      dependencies: filterInternalLernaDeps(
+        packageJson.dependencies,
+        lernaPackageNames
+      ),
+      devDependencies: filterInternalLernaDeps(
+        packageJson.devDependencies,
+        lernaPackageNames
+      ),
+    };
+    try {
+      const newPackageJson = {
+        ...packageJson,
+        dependencies: filterExternalDeps(
+          packageJson.dependencies,
+          lernaPackageNames
+        ),
+        devDependencies: filterExternalDeps(
+          packageJson.devDependencies,
+          lernaPackageNames
+        ),
+      };
 
-            const newPackageJson = ({
-                ...packageJson,
-                dependencies: filterExternalDeps(packageJson.dependencies, lernaPackageNames),
-                devDependencies: filterExternalDeps(packageJson.devDependencies, lernaPackageNames)
-            });
+      await promises.writeFile(
+        packagePaths.originalPath,
+        JSON.stringify(newPackageJson, null, 2)
+      );
 
-            await promises.writeFile(packagePaths.originalPath, JSON.stringify(newPackageJson, null, 2));
-
-            try {
-                console.log(`Run audit in ${lernaPackage.location}`);
-                const audit = await cmd('npm audit', lernaPackage.location);
-                console.log(audit);
-            } catch (e) {
-                console.error(e);
-                if(argv.fix){
-                    console.log('We will fix this for you');
-                    const auditFix = await cmd('npm audit fix', lernaPackage.location);
-                    console.log(auditFix);
-                }
-            }
-            const restoredPackageJson = restorePackageJson(packagePaths, internalLernaDependencies);
-
-            await promises.writeFile(packagePaths.originalPath, JSON.stringify(restoredPackageJson, null, 2));
-            await promises.unlink(packagePaths.backupPath);
-        } catch (e) {
-            console.error(e);
-            await restoreOriginalPackageJson(packagePaths);
+      try {
+        console.log(`Run audit in ${lernaPackage.location}`);
+        const audit = await cmd("npm audit", lernaPackage.location);
+        console.log(audit);
+      } catch (e) {
+        console.error(e);
+        if (argv.fix) {
+          console.log("We will fix this for you");
+          const auditFix = await cmd("npm audit fix", lernaPackage.location);
+          console.log(auditFix);
         }
+      }
+      const restoredPackageJson = restorePackageJson(
+        packagePaths,
+        internalLernaDependencies
+      );
+
+      await promises.writeFile(
+        packagePaths.originalPath,
+        JSON.stringify(restoredPackageJson, null, 2)
+      );
+      await promises.unlink(packagePaths.backupPath);
+    } catch (e) {
+      console.error(e);
+      await restoreOriginalPackageJson(packagePaths);
     }
+  }
 }
 
 (async () => {
-    await lernaAudit();
+  await lernaAudit();
 })();
